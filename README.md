@@ -373,3 +373,321 @@ still working... [drifting]
 still working... [drifting]
 We really weren't meant to be together
 ```
+
+# Soal 3 - One letter for destiny
+
+Program `angel.c` adalah sebuah program C yang memiliki fungsi utama sebagai *daemon* yang berjalan di latar belakang (*background process*). Program ini bertugas untuk menulis kalimat acak ke dalam file `LoveLetter.txt` secara berkala (setiap 10 detik) dan langsung mengenkripsinya menggunakan *Base64* agar tidak dapat dibaca orang lain. Selain itu, program dilengkapi dengan argumen *command-line* untuk mendekripsi file, menghentikan *daemon*, dan mencatat seluruh aktivitas sistem ke dalam file log `ethereal.log`.
+
+## Poin 1 & 7: Pembuatan Daemon dan Manipulasi Nama Proses
+
+Untuk menjadikan program berjalan sebagai *daemon* (dengan argumen `-daemon`), digunakan teknik standar double `fork()`.
+- `fork()` pertama dipanggil untuk membuat *child process*, kemudian *parent process* dihentikan (exit).
+- `setsid()` dipanggil untuk melepaskan proses dari terminal.
+- `fork()` kedua memastikan proses tidak akan pernah mengambil alih terminal kembali.
+- Agar file yang dibuat (`LoveLetter.txt` dan `ethereal.log`) tersimpan di direktori saat perintah dieksekusi, fungsi `chdir(cwd)` digunakan untuk menahan proses di *Current Working Directory*, alih-alih berpindah ke *root* direktori `/`.
+- Sesuai permintaan soal untuk mengubah nama proses di `ps aux` menjadi `"maya"`, digunakan fungsi `prctl(PR_SET_NAME, "maya", 0, 0, 0)`, argumen `argv[0]` ditimpa dengan string `"maya"`, dan argumen lainnya dibersihkan.
+
+```c
+void run_daemon(char *cwd, int argc, char *argv[]) {    // --- Inisialisasi Daemon ---
+    pid_t pid = fork();
+    if (pid < 0) exit(EXIT_FAILURE);
+    if (pid > 0) exit(EXIT_SUCCESS); 
+    
+    if (setsid() < 0) exit(EXIT_FAILURE);
+    
+    pid = fork();
+    if (pid < 0) exit(EXIT_FAILURE);
+    if (pid > 0) exit(EXIT_SUCCESS); 
+    
+    umask(0);
+    chdir(cwd); // Tetap di direktori pengeksekusian awal
+    
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+
+    // Ubah nama proses yang tampil di ps aux menjadi "maya"
+    prctl(PR_SET_NAME, "maya", 0, 0, 0);
+    
+    // Bersihkan seluruh argumen bawaan ('-daemon') dari memori
+    for (int i = 0; i < argc; i++) {
+        memset(argv[i], 0, strlen(argv[i]));
+    }
+    // Set ulang argv[0] menjadi maya
+    strcpy(argv[0], "maya");
+...snip...
+```
+
+## Poin 2: Fitur `secret` (Penulisan Kalimat Acak)
+
+Fitur ini berjalan di dalam *infinite loop* `while(1)` dari proses *daemon*. Program mendeklarasikan *array* berisi empat kalimat hardcode. Dengan menggunakan `srand(time(NULL))` sebagai *seed* dan `rand() % 4`, program memilih satu kalimat secara acak, membuka file `LoveLetter.txt` dengan mode "w" (*write/overwrite*), dan menulis kalimat tersebut.
+
+```c
+...snip...
+    const char *sentences[] = {
+        "aku akan fokus pada diriku sendiri",
+        "aku mencintaimu dari sekarang hingga selamanya",
+        "aku akan menjauh darimu, hingga takdir mempertemukan kita di versi kita yang terbaik.",
+        "kalau aku dilahirkan kembali, aku tetap akan terus menyayangimu"
+    };
+    srand(time(NULL));
+
+    // Loop Utama Daemon
+    while (1) {
+        // --- Fitur: secret ---
+        write_log("secret", "RUNNING");
+        FILE *f = fopen("LoveLetter.txt", "w");
+        if (f) {
+            int r = rand() % 4;
+            fprintf(f, "%s", sentences[r]);
+            fclose(f);
+            write_log("secret", "SUCCESS");
+        } else {
+            write_log("secret", "ERROR");
+        }
+...snip...
+```
+
+## Poin 3 & 4: Fitur `surprise` (Enkripsi Otomatis Berkala)
+
+Segera setelah fitur `secret` menulis pesan asli ke dalam file, fitur `surprise` mengambil alih. Program membaca ulang isi file tersebut ke dalam memori sementara, memanggil fungsi pembantu `b64_encode()` untuk mengubah *plain-text* menjadi format *Base64*, dan menimpa kembali file `LoveLetter.txt` dengan pesan yang telah dienkripsi. Seluruh proses secret dan surprise ini akan tertidur sementara dengan fungsi `sleep(10)` dan berulang terus menerus (Poin 4).
+
+```c
+        // --- Fitur: surprise ---
+        write_log("surprise", "RUNNING");
+        f = fopen("LoveLetter.txt", "r");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long fsize = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            
+            unsigned char *content = malloc(fsize + 1);
+            fread(content, 1, fsize, f);
+            content[fsize] = 0;
+            fclose(f);
+            
+            // Enkripsi Base64
+            char *encoded = b64_encode(content, fsize);
+            free(content);
+            
+            if (encoded) {
+                f = fopen("LoveLetter.txt", "w");
+                fprintf(f, "%s", encoded);
+                fclose(f);
+                free(encoded);
+                write_log("surprise", "SUCCESS");
+            } else {
+                write_log("surprise", "ERROR");
+            }
+        } else {
+            write_log("surprise", "ERROR");
+        }
+        
+        sleep(10); // Ulangi setiap 10 detik
+```
+
+## Poin 5: Fitur `decrypt` (Pengembalian Pesan Asli)
+
+Fitur ini dipanggil terpisah melalui terminal dengan perintah `./angel -decrypt`. Program tidak berjalan sebagai *daemon*, melainkan proses biasa. Program membaca isi `LoveLetter.txt`, memasukkannya ke fungsi `b64_decode()` untuk meng-"dekripsi" string *Base64* nya, dan menulis kembali hasilnya ke file yang sama. Error handling ditambahkan dengan mengecek eksistensi *pointer* `FILE *f` (jika file tidak ada) dan mengecek validitas output dari *decoder*.
+
+```c
+void run_decrypt() {
+    write_log("decrypt", "RUNNING");
+    FILE *f = fopen("LoveLetter.txt", "r");
+    if (!f) {
+        printf("Error: File LoveLetter.txt tidak ada.\n");
+        write_log("decrypt", "ERROR");
+        return;
+    }
+    
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    
+    char *content = malloc(fsize + 1);
+    fread(content, 1, fsize, f);
+    content[fsize] = 0;
+    fclose(f);
+    
+    size_t out_len;
+    unsigned char *decoded = b64_decode(content, &out_len);
+    free(content);
+    
+    if (decoded) {
+        f = fopen("LoveLetter.txt", "w");
+        fwrite(decoded, 1, out_len, f);
+        fclose(f);
+        free(decoded);
+        printf("Isi file LoveLetter.txt berhasil dikembalikan (decrypt).\n");
+        write_log("decrypt", "SUCCESS");
+    } else {
+        printf("Error: Gagal mendekripsi file (format Base64 mungkin tidak valid).\n");
+        write_log("decrypt", "ERROR");
+    }
+}
+```
+
+## Poin 6: Fitur kill (Mematikan Daemon)
+
+Program memanfaatkan direktori *native* sistem Linux (`/proc`) untuk melacak *daemon* yang sedang berjalan.
+Ketika fitur `./angel -kill` dipanggil:
+- Program membuka direktori `/proc` menggunakan `opendir()`.
+- Ia mengiterasi seluruh folder di dalamnya dengan `readdir()`.
+- Memfilter folder yang namanya berupa susunan angka penuh (menandakan bahwa folder tersebut adalah representasi *Process ID*).
+- Masuk ke dalam setiap folder PID dan membaca file `comm` (contoh: `/proc/1234/comm`) yang menyimpan nama proses.
+- Jika string yang terbaca identik dengan `"maya"`, PID tersebut disimpan, dan iterasi dihentikan.
+- Perintah `kill(target_pid, SIGTERM)` akan dieksekusi ke PID tersebut, yang mana akan mematikan *daemon* secara instan.
+
+```c
+void run_kill() {
+    write_log("kill", "RUNNING");
+    DIR *dir;
+    struct dirent *ent;
+    pid_t target_pid = -1;
+
+    // Buka direktori /proc
+    if ((dir = opendir("/proc")) != NULL) {
+        // Iterasi semua entri di dalam /proc
+        while ((ent = readdir(dir)) != NULL) {
+            // Cek apakah nama direktori sepenuhnya angka (berarti itu direktori PID)
+            int is_pid = 1;
+            for (int i = 0; ent->d_name[i] != '\0'; i++) {
+                if (!isdigit(ent->d_name[i])) {
+                    is_pid = 0;
+                    break;
+                }
+            }
+
+            if (is_pid) {
+                char path[256];
+                // File 'comm' berisi nama command dari proses tersebut
+                snprintf(path, sizeof(path), "/proc/%s/comm", ent->d_name);
+                
+                FILE *f = fopen(path, "r");
+                if (f) {
+                    char process_name[256];
+                    if (fgets(process_name, sizeof(process_name), f) != NULL) {
+                        // Hapus karakter newline (\n) di akhir string
+                        process_name[strcspn(process_name, "\n")] = 0;
+                        
+                        // Cek apakah namanya adalah "maya"
+                        if (strcmp(process_name, "maya") == 0) {
+                            target_pid = atoi(ent->d_name);
+                            fclose(f);
+                            break; // Ketemu! Keluar dari loop readdir
+                        }
+                    }
+                    fclose(f);
+                }
+            }
+        }
+        closedir(dir);
+    } else {
+        printf("Error: Tidak dapat membuka direktori /proc.\n");
+        write_log("kill", "ERROR");
+        return;
+    }
+
+    // Eksekusi Kill jika PID ditemukan
+    if (target_pid != -1) {
+        if (kill(target_pid, SIGTERM) == 0) {
+            printf("Proses daemon 'maya' (PID: %d) berhasil dihentikan.\n", target_pid);
+            write_log("kill", "SUCCESS");
+        } else {
+            printf("Error: Gagal menghentikan proses.\n");
+            write_log("kill", "ERROR");
+        }
+    } else {
+        printf("Error: Program (daemon) 'maya' tidak ditemukan sedang berjalan.\n");
+        write_log("kill", "ERROR");
+    }
+}
+```
+
+## Poin 8: Pencatatan Log Aktivitas
+
+Untuk merekam riwayat semua aksi (baik oleh proses *daemon* yang berjalan sendiri, maupun aksi CLI manual oleh user), disediakan fungsi `write_log()`. Setiap kali ada proses seperti `secret`, `surprise`, `decrypt`, maupun `kill` dieksekusi, statusnya dicatat: saat memulai (`RUNNING`), saat selesai tanpa error (`SUCCESS`), maupun saat menemukan kesalahan (`ERROR`). Format timestamp didapatkan dengan mengekstrak data dari `time(NULL)` dan diformat sedemikian rupa menjadi `[dd:mm:yyyy]-[hh:mm:ss]_nama-proses_STATUS` untuk kemudian di append ke file `ethereal.log`.
+
+```c
+void write_log(const char *process, const char *status) {
+    FILE *f = fopen("ethereal.log", "a");
+    if (!f) return;
+    time_t t = time(NULL);
+    struct tm tm = *localtime(&t);
+    fprintf(f, "[%02d:%02d:%04d]-[%02d:%02d:%02d]_%s_%s\n",
+            tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900,
+            tm.tm_hour, tm.tm_min, tm.tm_sec,
+            process, status);
+    fclose(f);
+}
+```
+
+## Output Terminal
+
+```
+┌──(hannn㉿Hannn-Legion)-[/mnt/d/Desktop/SISOP-2-2026-IT-052/soal_3]
+└─$ ./angel
+Penggunaan:
+  ./angel -daemon  : jalankan sebagai daemon (nama proses: maya)
+  ./angel -decrypt : decrypt LoveLetter.txt
+  ./angel -kill    : kill proses
+
+┌──(hannn㉿Hannn-Legion)-[/mnt/d/Desktop/SISOP-2-2026-IT-052/soal_3]
+└─$ ./angel -daemon
+
+┌──(hannn㉿Hannn-Legion)-[/mnt/d/Desktop/SISOP-2-2026-IT-052/soal_3]
+└─$ ps aux
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root           1  0.0  0.1  24404 14332 ?        Ss   07:38   0:00 /sbin/init
+root           2  0.0  0.0   3060  1920 ?        Sl   07:38   0:00 /init
+root           7  0.0  0.0   3060  1792 ?        Sl   07:38   0:00 plan9 --control-socket 7 --log-level 4 --server-fd 8 --pipe-fd 10 --log-truncate
+root          54  0.0  0.1  50076 15104 ?        Ss   07:38   0:00 /usr/lib/systemd/systemd-journald
+root          68  0.1  0.0  35008 12032 ?        Ss   07:38   0:02 /usr/lib/systemd/systemd-udevd
+root         154  0.0  0.0   4280  2176 ?        Ss   07:39   0:00 /usr/sbin/cron -f
+message+     155  0.0  0.0   8188  3840 ?        Ss   07:39   0:00 /usr/bin/dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+polkitd      191  0.0  0.0 306508  7168 ?        Ssl  07:39   0:00 /usr/lib/polkit-1/polkitd --no-debug --log-level=notice
+root         206  0.0  0.0  17796  8320 ?        Ss   07:39   0:00 /usr/lib/systemd/systemd-logind
+root         397  0.0  0.0   5168  2432 hvc0     Ss+  07:39   0:00 /usr/sbin/agetty --noreset --noclear --issue-file=/etc/issue:/etc/issue.d:/run/issue.d:/usr/lib/issue.d --keep-b
+root         398  0.0  0.0   5124  2432 tty1     Ss+  07:39   0:00 /usr/sbin/agetty --noreset --noclear --issue-file=/etc/issue:/etc/issue.d:/run/issue.d:/usr/lib/issue.d - linux
+root         599  0.0  0.0   3064   896 ?        Ss   07:39   0:00 /init
+root         600  0.0  0.0   3080  1024 ?        S    07:39   0:00 /init
+hannn        601  0.0  0.0   8648  5248 pts/0    Ss   07:39   0:00 -bash
+root         602  0.0  0.0   7900  4224 ?        Ss   07:39   0:00 login -- hannn
+hannn        625  0.0  0.0  22556 12672 ?        Ss   07:39   0:00 /usr/lib/systemd/systemd --user
+hannn        627  0.0  0.0  22548  3720 ?        S    07:39   0:00 (sd-pam)
+hannn        656  0.0  0.0   7184  3328 ?        Ss   07:39   0:00 /usr/bin/mpris-proxy
+hannn        657  0.0  0.0   5448  4736 pts/1    Ss+  07:39   0:00 -bash
+hannn        659  0.0  0.0   8004  4224 ?        Ss   07:39   0:00 /usr/bin/dbus-daemon --session --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+hannn       1542  0.0  0.0   2564  1408 ?        S    08:12   0:00 maya
+hannn       1552  0.0  0.0   9336  4096 pts/0    R+   08:12   0:00 ps aux
+
+┌──(hannn㉿Hannn-Legion)-[/mnt/d/Desktop/SISOP-2-2026-IT-052/soal_3]
+└─$ ls
+angel  angel.c  ethereal.log  LoveLetter.txt
+
+┌──(hannn㉿Hannn-Legion)-[/mnt/d/Desktop/SISOP-2-2026-IT-052/soal_3]
+└─$ ./angel -decrypt
+Isi file LoveLetter.txt berhasil dikembalikan (decrypt).
+
+┌──(hannn㉿Hannn-Legion)-[/mnt/d/Desktop/SISOP-2-2026-IT-052/soal_3]
+└─$ cat LoveLetter.txt
+aku akan menjauh darimu, hingga takdir mempertemukan kita di versi kita yang terbaik.
+┌──(hannn㉿Hannn-Legion)-[/mnt/d/Desktop/SISOP-2-2026-IT-052/soal_3]
+└─$ ./angel -kill
+Proses daemon 'maya' (PID: 1542) berhasil dihentikan.
+
+┌──(hannn㉿Hannn-Legion)-[/mnt/d/Desktop/SISOP-2-2026-IT-052/soal_3]
+└─$ cat ethereal.log
+[07:04:2026]-[08:12:43]_secret_RUNNING
+[07:04:2026]-[08:12:43]_secret_SUCCESS
+[07:04:2026]-[08:12:43]_surprise_RUNNING
+[07:04:2026]-[08:12:43]_surprise_SUCCESS
+[07:04:2026]-[08:12:53]_secret_RUNNING
+[07:04:2026]-[08:12:53]_secret_SUCCESS
+[07:04:2026]-[08:12:53]_surprise_RUNNING
+[07:04:2026]-[08:12:53]_surprise_SUCCESS
+[07:04:2026]-[08:12:55]_decrypt_RUNNING
+[07:04:2026]-[08:12:55]_decrypt_SUCCESS
+[07:04:2026]-[08:13:02]_kill_RUNNING
+[07:04:2026]-[08:13:02]_kill_SUCCESS
+```
