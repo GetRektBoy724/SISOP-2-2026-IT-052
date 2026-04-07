@@ -66,6 +66,7 @@ Setelah brankas siap, program kembali melakukan `fork()`. Child process kedua me
 ## Poin 4: Ekstraksi Data "Belum Lunas"
 
 Ini adalah tahap yang membutuhkan trik khusus karena larangan menggunakan `system()`. Untuk melakukan *redirection output* (`>`) ke file `daftar_penunggak.txt`, kita tidak bisa memanggil `grep` secara langsung. Oleh karena itu, *child process* ketiga menggunakan *shell execution*:
+
 ```c
 ...snip...
     pid = fork();
@@ -81,6 +82,7 @@ Ini adalah tahap yang membutuhkan trik khusus karena larangan menggunakan `syste
     }
 ...snip...
 ```
+
 Perintah `bash -c` memungkinkan *shell* untuk membaca seluruh *string* tersebut sebagai satu perintah utuh, sehingga karakter `>` dapat berfungsi sebagaimana mestinya di *terminal*. Berikut adalah output dari `daftar_penunggak.txt`
 
 ```
@@ -128,6 +130,7 @@ Jika seluruh langkah dari 1 hingga 4 berhasil melewati fungsi `check_status(stat
 ## Output Terminal
 
 Kita bisa meng-*compile* kodenya menggunakan GCC dengan command `gcc kasir_muthu.c -o kasir_muthu`. Lalu, saat dijalankan, outputnya adalah
+
 ```
 ┌──(hannn㉿Hannn-Legion)-[/mnt/d/Desktop/SISOP-2-2026-IT-052/soal_1]
 └─$ ./kasir_muthu
@@ -142,6 +145,7 @@ Kita bisa meng-*compile* kodenya menggunakan GCC dengan command `gcc kasir_muthu
 Tugas ini mensimulasikan sebuah proses di balik layar (*daemon*) yang menggambarkan konsep "keberlanjutan". *Daemon* ini bertugas mencatat log aktivitas secara berkala, membuat file kontrak (*agreement*), memonitor integritas file kontrak tersebut dari modifikasi atau penghapusan, dan memberikan pesan khusus ketika proses *daemon* dihentikan secara paksa. Semua operasi harus dilakukan murni menggunakan bahasa pemrograman C tanpa intervensi file manual.
 
 ## Poin 1 & 2: Daemon Process dan Log Rutin
+
 - Pembuatan Daemon: Program diubah menjadi *background process* menggunakan fungsi `daemonize()`. Fungsi ini melakukan *double fork* untuk melepaskan proses dari terminal yang mengontrolnya (controlling terminal) (alasan lebih lengkapnya bisa di baca [disini](https://stackoverflow.com/questions/881388/what-is-the-reason-for-performing-a-double-fork-when-creating-a-daemon)), memanggil `setsid()` untuk membuat *session* baru, dan menutup *standard I/O* (`stdin`, `stdout`, `stderr`) agar program berjalan murni di balik layar secara "sunyi".
 
 ```c
@@ -312,6 +316,7 @@ void handle_signal(int sig) {
 ```
 
 ## Output Terminal
+
 ```
 ┌──(hannn㉿Hannn-Legion)-[/mnt/d/Desktop/SISOP-2-2026-IT-052/soal_2]
 └─$ ./contract_daemon
@@ -381,6 +386,7 @@ Program `angel.c` adalah sebuah program C yang memiliki fungsi utama sebagai *da
 ## Poin 1 & 7: Pembuatan Daemon dan Manipulasi Nama Proses
 
 Untuk menjadikan program berjalan sebagai *daemon* (dengan argumen `-daemon`), digunakan teknik standar double `fork()`.
+
 - `fork()` pertama dipanggil untuk membuat *child process*, kemudian *parent process* dihentikan (exit).
 - `setsid()` dipanggil untuk melepaskan proses dari terminal.
 - `fork()` kedua memastikan proses tidak akan pernah mengambil alih terminal kembali.
@@ -531,6 +537,7 @@ void run_decrypt() {
 
 Program memanfaatkan direktori *native* sistem Linux (`/proc`) untuk melacak *daemon* yang sedang berjalan.
 Ketika fitur `./angel -kill` dipanggil:
+
 - Program membuka direktori `/proc` menggunakan `opendir()`.
 - Ia mengiterasi seluruh folder di dalamnya dengan `readdir()`.
 - Memfilter folder yang namanya berupa susunan angka penuh (menandakan bahwa folder tersebut adalah representasi *Process ID*).
@@ -619,6 +626,73 @@ void write_log(const char *process, const char *status) {
             tm.tm_hour, tm.tm_min, tm.tm_sec,
             process, status);
     fclose(f);
+}
+```
+
+## Base64 *Encoder* dan *Decoder*
+
+Konsep dasar *Base64* adalah teknik mengubah data biner (termasuk teks) menjadi format yang hanya berisi 64 karakter yang aman dicetak (huruf besar-kecil, angka, +, dan /). Fungsi `b64_encode` bekerja dengan mengambil 3 byte karakter (total 24 bit) dari teks asli, lalu memecahnya menjadi 4 bagian yang masing-masing berukuran 6 bit. Setiap nilai 6 bit ini kemudian dicocokkan dengan indeks pada *lookup table* (*array* `b64chars`) untuk menghasilkan 4 karakter teks baru. Jika sisa data di akhir tidak pas 3 byte, karakter sama dengan (=) ditambahkan sebagai padding.
+
+```c
+char *b64_encode(const unsigned char *in, size_t len) {
+    char *out;
+    size_t elen;
+    size_t i, j, v;
+
+    if (in == NULL || len == 0) return NULL;
+
+    elen = 4 * ((len + 2) / 3);
+    out = malloc(elen + 1);
+    out[elen] = '\0';
+
+    for (i=0, j=0; i<len; i+=3, j+=4) {
+        v = in[i];
+        v = i+1 < len ? v << 8 | in[i+1] : v << 8;
+        v = i+2 < len ? v << 8 | in[i+2] : v << 8;
+
+        out[j]   = b64chars[(v >> 18) & 0x3F];
+        out[j+1] = b64chars[(v >> 12) & 0x3F];
+        if (i+1 < len) out[j+2] = b64chars[(v >> 6) & 0x3F];
+        else out[j+2] = '=';
+        if (i+2 < len) out[j+3] = b64chars[v & 0x3F];
+        else out[j+3] = '=';
+    }
+    return out;
+}
+```
+
+Sebaliknya, fungsi `b64_decode` melakukan proses kebalikan. Ia membaca 4 karakter *Base64*, mencari nilai indeks aslinya (0-63) menggunakan tabel pencarian terbalik, dan merangkai kembali keempat nilai 6 bit tersebut menjadi satu kesatuan 24 bit. Nilai 24 bit ini kemudian dipotong-potong kembali menjadi 3 byte utuh yang merupakan karakter teks asli. Ini memungkinkan data dikembalikan ke bentuk semula tanpa kehilangan informasi.
+
+```c
+unsigned char *b64_decode(const char *in, size_t *out_len) {
+    size_t len = strlen(in);
+    if (len % 4 != 0) return NULL;
+    
+    size_t padding = 0;
+    if (len > 0 && in[len-1] == '=') padding++;
+    if (len > 1 && in[len-2] == '=') padding++;
+    
+    *out_len = (len / 4) * 3 - padding;
+    unsigned char *out = malloc(*out_len + 1);
+    if (!out) return NULL;
+    
+    int b[256];
+    for (int i=0; i<256; i++) b[i] = -1;
+    for (int i=0; i<64; i++) b[(unsigned char)b64chars[i]] = i;
+    
+    size_t i, j;
+    for (i=0, j=0; i<len; i+=4, j+=3) {
+        int v = b[(unsigned char)in[i]] << 18 | 
+                b[(unsigned char)in[i+1]] << 12 | 
+                (in[i+2] == '=' ? 0 : b[(unsigned char)in[i+2]]) << 6 | 
+                (in[i+3] == '=' ? 0 : b[(unsigned char)in[i+3]]);
+                
+        out[j] = (v >> 16) & 0xFF;
+        if (in[i+2] != '=') out[j+1] = (v >> 8) & 0xFF;
+        if (in[i+3] != '=') out[j+2] = v & 0xFF;
+    }
+    out[*out_len] = '\0';
+    return out;
 }
 ```
 
