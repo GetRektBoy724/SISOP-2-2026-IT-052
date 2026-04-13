@@ -249,13 +249,17 @@ void get_timestamp(char *buffer, size_t size) {
 
 ## Poin 4 & 5: Monitor Penghapusan File (Restore) dan Perubahan Isi Kontrak (Violation)
 
-- Program menggunakan thread terpisah melalui *POSIX Threads* (`pthread_create`). Fungsi `monitor_thread` berjalan paralel dengan loop utama.
+- Pada versi ini, program tidak menggunakan *thread* terpisah (*Single-Threaded*). Alih-alih menjalankan proses secara paralel, program menggabungkan proses pemantauan file dan penulisan log ke dalam satu loop utama (di dalam fungsi `main()`). Pendekatan ini memanfaatkan variabel penghitung (`timer`) dan fungsi `sleep(1)` agar pengecekan file dapat dilakukan secara berurutan setiap detiknya.
 
 ```c
-void *monitor_thread(void *arg) {
-    while (1) {
-        sleep(1); // Cek file setiap 1 detik
+...snip...
+    // Variabel timer untuk melacak detik
+    int timer = 0;
+    const char *statuses[] = {"[awake]", "[drifting]", "[numbness]"};
 
+    // Loop utama tunggal (tanpa thread)
+    while (1) {
+        // --- TUGAS 1: Mengecek contract.txt (Dieksekusi SETIAP 1 DETIK) ---
         FILE *fp = fopen(contract_filename, "r");
         if (fp == NULL) {
             // Skenario 4: File dihapus (tidak ditemukan)
@@ -269,26 +273,38 @@ void *monitor_thread(void *arg) {
 
             // Skenario 5: Jika isi file berbeda dari yang seharusnya (diubah)
             if (strcmp(current_content, expected_content) != 0) {
-                write_violation_log();
+                FILE *log_fp = fopen(log_filename, "a");
+                if (log_fp) {
+                    fprintf(log_fp, "contract violated.\n");
+                    fclose(log_fp);
+                }
                 write_contract(1); // Restore file
             }
         }
+
+        // --- TUGAS 2: Menulis work.log (Dieksekusi SETIAP KELIPATAN 5 DETIK) ---
+        if (timer % 5 == 0) {
+            FILE *log_fp = fopen(log_filename, "a");
+            if (log_fp) {
+                int status_idx = rand() % 3;
+                fprintf(log_fp, "still working... %s\n", statuses[status_idx]);
+                fclose(log_fp);
+            }
+        }
+
+        timer++; // Tambah penghitung waktu
+        sleep(1); // Tunggu 1 detik sebelum mengulang loop
     }
-    return NULL;
-}
-```
-
-```c
-...snip...
-    // 4. Jalankan thread monitor contract.txt
-    pthread_t tid;
-    pthread_create(&tid, NULL, monitor_thread, NULL);
 ...snip...
 ```
 
-- Thread ini melakukan pengecekan setiap 1 detik (`sleep(1)`). Program mencoba membuka contract.txt dalam mode read ("r"). Jika *return value* pointer `FILE` adalah `NULL`, artinya file tersebut tidak ada atau terhapus. Maka, program akan memanggil `write_contract(1)`. Parameter 1 (`is_restored`) akan mengubah baris kedua kontrak menjadi format `"restored at: <timestamp>"`.
+- Di dalam loop utama yang selalu tereksekusi setiap 1 detik, program memonitor `contract.txt` dengan mencoba membukanya menggunakan mode *read* (`"r"`). Jika *return value* pointer `FILE` adalah `NULL`, artinya file tersebut tidak ada atau terhapus. Maka, program akan langsung memanggil fungsi `write_contract(1)`. Parameter 1 (`is_restored`) akan mengubah baris kedua kontrak menjadi format `"restored at: <timestamp>"`.
 
-- Jika file `contract.txt` ditemukan, `monitor_thread` akan membaca keseluruhan isinya menggunakan `fread()` dan menyimpannya ke variabel sementara `current_content`. Fungsi `strcmp()` digunakan untuk membandingkan isi file saat ini dengan variabel `expected_content` (isi asli yang seharusnya). Jika hasilnya tidak sama (`!= 0`), maka file telah dimodifikasi. Program akan membuka `work.log` untuk mencetak peringatan `"contract violated."` menggunakan fungsi `write_violation_log`, lalu segera memanggil `write_contract(1)` untuk melakukan pemulihan (*restore*) file `contract.txt` ke isi yang sah beserta *timestamp* terbaru.
+Jika file `contract.txt` berhasil ditemukan, program akan membaca keseluruhan isinya menggunakan `fread()` dan menyimpannya ke variabel sementara `current_content`. Fungsi `strcmp()` kemudian digunakan untuk membandingkan isi file saat ini dengan variabel acuan `expected_content`.
+
+Jika hasil perbandingan tidak sama (`!= 0`), hal ini mengindikasikan bahwa file telah dimodifikasi. Program akan segera merespon dengan mencetak peringatan `"contract violated."` ke dalam `work.log`, lalu memanggil `write_contract(1)` untuk memulihkan (*restore*) file `contract.txt` kembali ke isi yang sah beserta timestamp terbaru.
+
+Untuk memastikan log `"still working..."` hanya tercetak setiap 5 detik meski loop berjalan setiap 1 detik, program memanfaatkan operasi modulo (`timer % 5 == 0`). Variabel timer akan terus bertambah (`timer++`) di setiap akhir iterasi loop.
 
 ## Poin 6: Penanganan Terminasi Program
 
@@ -378,6 +394,10 @@ still working... [drifting]
 still working... [drifting]
 We really weren't meant to be together
 ```
+
+## Revisi
+
+Kode program telah disesuaikan dengan menghilangkan penggunaan library `pthread`. Program kini berjalan menggunakan satu thread utama (*single-threaded*).
 
 # Soal 3 - One letter for destiny
 

@@ -62,32 +62,6 @@ void handle_signal(int sig) {
     exit(0);
 }
 
-// Thread khusus untuk memonitor file contract.txt
-void *monitor_thread(void *arg) {
-    while (1) {
-        sleep(1); // Cek file setiap 1 detik
-
-        FILE *fp = fopen(contract_filename, "r");
-        if (fp == NULL) {
-            // Skenario 4: File dihapus (tidak ditemukan)
-            write_contract(1); 
-        } else {
-            // Membaca isi file saat ini
-            char current_content[512] = {0};
-            size_t len = fread(current_content, 1, sizeof(current_content) - 1, fp);
-            current_content[len] = '\0';
-            fclose(fp);
-
-            // Skenario 5: Jika isi file berbeda dari yang seharusnya (diubah)
-            if (strcmp(current_content, expected_content) != 0) {
-                write_violation_log();
-                write_contract(1); // Restore file
-            }
-        }
-    }
-    return NULL;
-}
-
 // Fungsi untuk mengubah program menjadi Daemon
 void daemonize() {
     pid_t pid;
@@ -141,20 +115,47 @@ int main() {
     // 3. Pembuatan awal contract.txt (Poin ke-3)
     write_contract(0);
 
-    // 4. Jalankan thread monitor contract.txt
-    pthread_t tid;
-    pthread_create(&tid, NULL, monitor_thread, NULL);
-
-    // 5. Loop utama untuk menulis log setiap 5 detik (Poin ke-2)
+    // Variabel timer untuk melacak detik
+    int timer = 0;
     const char *statuses[] = {"[awake]", "[drifting]", "[numbness]"};
+
+    // Loop utama tunggal (tanpa thread)
     while (1) {
-        FILE *fp = fopen(log_filename, "a");
-        if (fp) {
-            int status_idx = rand() % 3;
-            fprintf(fp, "still working... %s\n", statuses[status_idx]);
+        // --- TUGAS 1: Mengecek contract.txt (Dieksekusi SETIAP 1 DETIK) ---
+        FILE *fp = fopen(contract_filename, "r");
+        if (fp == NULL) {
+            // Skenario 4: File dihapus (tidak ditemukan)
+            write_contract(1); 
+        } else {
+            // Membaca isi file saat ini
+            char current_content[512] = {0};
+            size_t len = fread(current_content, 1, sizeof(current_content) - 1, fp);
+            current_content[len] = '\0';
             fclose(fp);
+
+            // Skenario 5: Jika isi file berbeda dari yang seharusnya (diubah)
+            if (strcmp(current_content, expected_content) != 0) {
+                FILE *log_fp = fopen(log_filename, "a");
+                if (log_fp) {
+                    fprintf(log_fp, "contract violated.\n");
+                    fclose(log_fp);
+                }
+                write_contract(1); // Restore file
+            }
         }
-        sleep(5);
+
+        // --- TUGAS 2: Menulis work.log (Dieksekusi SETIAP KELIPATAN 5 DETIK) ---
+        if (timer % 5 == 0) {
+            FILE *log_fp = fopen(log_filename, "a");
+            if (log_fp) {
+                int status_idx = rand() % 3;
+                fprintf(log_fp, "still working... %s\n", statuses[status_idx]);
+                fclose(log_fp);
+            }
+        }
+
+        timer++; // Tambah penghitung waktu
+        sleep(1); // Tunggu 1 detik sebelum mengulang loop
     }
 
     return 0;
